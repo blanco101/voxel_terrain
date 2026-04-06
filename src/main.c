@@ -101,42 +101,60 @@ static void InitializeEffect() {
   Load_BMP("../maps/D1.bmp", &height_map, &height_map_w, &height_map_h);
 }
 
+
+static float lerp(float a, float b, float t) {
+    return a + t * (b - a);
+}
+
+
 static int DoEffect(unsigned int* pixels, int w, int h, int stride, int frame, float projection) {
   int painted_pixels = 0;
+  // 0 arriba 
+  // h abajo 
 
   int cx = w >> 1;
   int cy = h >> 1;
 
-  int depth = 20;
+  int depth = 512;
+  float xcam = 512;
+  float ycam = 100;
+  float zcam = 512;
 
-  for (int xp = 0; xp < w, xp++) {
-    int du = lerp(-1, 1, xp / w);
-    int u  = 512;
-    int v  = 512;
+  for (int xp = 0; xp < w; xp++) {
+
+    float du = lerp(-1, 1, (float)xp / (float)w);
+    float u = xcam;
+    float v = zcam;
 
     int max_y = 0;
-    int dv = 1; // TODO: check what is the right dv
+    float dv = 1.0f; // TODO: check what is the right dv
 
     // z relative to camera position
-    for (int z = 0; z < depth; z++) {
+    for (int z = 1; z < depth; z++) {
       u += du;
       v += dv;
 
-      int h  = height_map[u + v * height_map_w];
-      int y  = h - ycam;
-      int yp = cy - y * (projection / z);
+      int height = height_map[(int)u + (int)v * height_map_w];
+      int y = height - ycam;
+      int yp = cy - y * (projection  / z);
 
-      if (yp >= 0 && yp < h && yp > max_y) {
-        for (int line_y = max_y; line_y < yp; line_y++) {
-          pixels[xp + line_y * stride] = color_palette[(int)color_map[i + line_y * color_map_w]];
+        if (yp >= 0 && yp < h && yp > max_y) {
+
+          for (int line_y = max_y; line_y < yp; line_y++) {
+
+            pixels[xp + line_y * stride] = color_palette[(int)color_map[(int)u + (int)v * color_map_w]];
+            painted_pixels++;
+
+          }
+          max_y = yp;
         }
-        painted_pixels++;
-      }
     }
-  }
 
+  }
   return painted_pixels;
 }
+
+
 
 // ---------------------------------------------------------------------------
 
