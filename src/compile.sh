@@ -1,3 +1,6 @@
+if [ ! -d "obj" ]; then
+  mkdir obj
+fi
 
 # Para compilar en linux x86/x64
 gcc -c -g -Wall -O2 -o obj/main.o main.c
