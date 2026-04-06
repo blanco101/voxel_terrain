@@ -103,12 +103,35 @@ static void InitializeEffect() {
 
 static int DoEffect(unsigned int* pixels, int w, int h, int stride, int frame, float projection) {
   int painted_pixels = 0;
-  for (int j = 0; j < h; j++) {
-    for (int i = 0; i < w; i++) {
-      pixels[i + j * stride] = color_palette[(int)color_map[i + j * w]];
-      // pixels[i + j * stride] = RGB(height_map[i + j * w], height_map[i + j * w], height_map[i + j
-      // * w]);
-      painted_pixels++;
+
+  int cx = w >> 1;
+  int cy = h >> 1;
+
+  int depth = 20;
+
+  for (int xp = 0; xp < w, xp++) {
+    int du = lerp(-1, 1, xp / w);
+    int u  = 512;
+    int v  = 512;
+
+    int max_y = 0;
+    int dv = 1; // TODO: check what is the right dv
+
+    // z relative to camera position
+    for (int z = 0; z < depth; z++) {
+      u += du;
+      v += dv;
+
+      int h  = height_map[u + v * height_map_w];
+      int y  = h - ycam;
+      int yp = cy - y * (projection / z);
+
+      if (yp >= 0 && yp < h && yp > max_y) {
+        for (int line_y = max_y; line_y < yp; line_y++) {
+          pixels[xp + line_y * stride] = color_palette[(int)color_map[i + line_y * color_map_w]];
+        }
+        painted_pixels++;
+      }
     }
   }
 
@@ -157,7 +180,7 @@ int main(int argc, char** argv) {
   InitializeEffect();
 
   // Horizontal field of view
-  float hfov       = 60.0f * ((3.1416f * 2.0f) / 360.0f);  // Degrees to radians
+  float hfov       = 90.0f * ((3.1416f * 2.0f) / 360.0f);  // Degrees to radians
   float half_scr_w = (float)(req_w >> 1);
   float projection = (1.0f / tan(hfov * 0.5f)) * half_scr_w;
 
