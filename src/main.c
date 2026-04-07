@@ -96,65 +96,60 @@ static unsigned int* color_palette;
 static int height_map_w = 0, height_map_h = 0;
 static unsigned char* height_map;
 
+// Camera
+static float cam_x        = 0;
+static float cam_y        = 100;
+static float cam_z        = 0;
+static float camera_speed = 1.0f;
+
 static void InitializeEffect() {
-  Load_Paletted_BMP("../maps/C1W.bmp", &color_map, &color_palette, &color_map_w, &color_map_h);
-  Load_BMP("../maps/D1.bmp", &height_map, &height_map_w, &height_map_h);
+  Load_Paletted_BMP("../maps/C15.bmp", &color_map, &color_palette, &color_map_w, &color_map_h);
+  Load_BMP("../maps/D15.bmp", &height_map, &height_map_w, &height_map_h);
 }
 
-
-static float lerp(float a, float b, float t) {
-    return a + t * (b - a);
-}
-
+static float Lerp(float a, float b, float t) { return a + t * (b - a); }
 
 static int DoEffect(unsigned int* pixels, int w, int h, int stride, int frame, float projection) {
   int painted_pixels = 0;
-  // 0 arriba 
-  // h abajo 
 
-  int cx = w >> 1;
-  int cy = h >> 1;
+  // Screen center
+  int cy    = h >> 1;
+  int depth = 1024;
 
-  int depth = 512;
-  float xcam = 512;
-  float ycam = 100;
-  float zcam = 512;
-
+  // Traverse screen horizontally
   for (int xp = 0; xp < w; xp++) {
+    // Assumes FOV of 90 degrees
+    float du = Lerp(-1, 1, (float)xp / (float)w);
+    float u  = cam_x;
+    float v  = cam_z;
 
-    float du = lerp(-1, 1, (float)xp / (float)w);
-    float u = xcam;
-    float v = zcam;
-
-    int max_y = 0;
-    float dv = 1.0f; // TODO: check what is the right dv
+    // 0 Up - h Down
+    int min_y = h - 1;
+    float dv  = 1.0f;  // TODO: check what is the right dv
 
     // z relative to camera position
     for (int z = 1; z < depth; z++) {
       u += du;
-      v += dv;
+      v -= dv;
+      int iu = (int)u & (height_map_w - 1);
+      int iv = (int)v & (height_map_h - 1);
 
-      int height = height_map[(int)u + (int)v * height_map_w];
-      int y = height - ycam;
-      int yp = cy - y * (projection  / z);
+      int height = height_map[iu + iv * height_map_w];
+      int y      = height - cam_y;
+      int yp     = cy - y * (projection / z);
 
-        if (yp >= 0 && yp < h && yp > max_y) {
-
-          for (int line_y = max_y; line_y < yp; line_y++) {
-
-            pixels[xp + line_y * stride] = color_palette[(int)color_map[(int)u + (int)v * color_map_w]];
-            painted_pixels++;
-
-          }
-          max_y = yp;
+      if (yp >= 0 && yp < h && yp < min_y) {
+        // Traverse screen vertically
+        for (int line_y = min_y; line_y > yp; line_y--) {
+          pixels[xp + line_y * stride] = color_palette[(int)color_map[iu + iv * color_map_w]];
+          painted_pixels++;
         }
+        min_y = yp;
+      }
     }
-
   }
   return painted_pixels;
 }
-
-
 
 // ---------------------------------------------------------------------------
 
@@ -175,7 +170,7 @@ int main(int argc, char** argv) {
   int mouse_x = 0, mouse_y = 0;
   SDL_Surface* g_SDLSrf;
   int req_w = 1024;
-  int req_h = 1024;
+  int req_h = 768;
 
   if (argc < 2) {
     fprintf(stderr, "I need the cpu speed in Mhz!\n");
@@ -207,7 +202,13 @@ int main(int argc, char** argv) {
   while (!end) {
     SDL_Event event;
 
-    // Your gfx effect goes here
+    unsigned char* keyboard_state = SDL_GetKeyState(NULL);
+    if (keyboard_state[SDLK_w]) cam_z -= camera_speed;
+    if (keyboard_state[SDLK_s]) cam_z += camera_speed;
+    if (keyboard_state[SDLK_a]) cam_x -= camera_speed;
+    if (keyboard_state[SDLK_d]) cam_x += camera_speed;
+    if (keyboard_state[SDLK_q]) cam_y += camera_speed;
+    if (keyboard_state[SDLK_e]) cam_y -= camera_speed;
 
     ChronoWatchReset();
     // Draw vertices; don't modify this section
@@ -218,6 +219,7 @@ int main(int argc, char** argv) {
     SDL_FillRect(g_SDLSrf, NULL, SDL_MapRGB(g_SDLSrf->format, 0, 0, 0));
     // ChronoShow("Clean", g_SDLSrf->w * g_SDLSrf->h);
 
+    // Your gfx effect goes here
     ChronoWatchReset();
     int n_draw = DoEffect(g_SDLSrf->pixels, g_SDLSrf->w, g_SDLSrf->h, g_SDLSrf->pitch >> 2, dump,
                           projection);
@@ -247,8 +249,13 @@ int main(int argc, char** argv) {
           mouse_y = event.motion.y;
           break;
         case SDL_MOUSEBUTTONDOWN:
-          // printf("Mouse button %d pressed at (%d,%d)\n",
-          //        event.button.button, event.button.x, event.button.y);
+          if (SDL_BUTTON_WHEELDOWN == event.button.button) {
+            camera_speed -= 1.0f;
+          } else if (SDL_BUTTON_WHEELUP == event.button.button) {
+            camera_speed += 1.0f;
+          }
+          if (camera_speed < 0.0f) camera_speed = 0.0f;
+          if (camera_speed > 10.0f) camera_speed = 10.0f;
           break;
         case SDL_QUIT:
           end = 1;
