@@ -90,7 +90,6 @@ static void Load_BMP(const char* file_path, unsigned char** pixels, int* width, 
 static int color_map_w = 0, color_map_h = 0;
 static unsigned char* color_map;
 static unsigned int* color_palette;
-static unsigned char* color_buffer;
 
 // Height map
 static int height_map_w = 0, height_map_h = 0;
@@ -102,16 +101,15 @@ static float cam_y        = 100;
 static float cam_z        = 0;
 static float camera_speed = 1.0f;
 
-static void InitializeEffect(int w, int h) {
+static void InitializeEffect() {
   Load_Paletted_BMP("../maps/C1W.bmp", &color_map, &color_palette, &color_map_w, &color_map_h);
   Load_BMP("../maps/D1.bmp", &height_map, &height_map_w, &height_map_h);
-  color_buffer = (unsigned char*)malloc(w * h);
 }
 
 static float Lerp(float a, float b, float t) { return a + t * (b - a); }
 
-static int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, float projection) {
-  int loop_count = 0;  // Do we need this or use width * height?
+static int DoEffect(unsigned int* pixels, int w, int h, int stride, int frame, float projection) {
+  int painted_pixels = 0;
 
   // Screen center
   int cy    = h >> 1;
@@ -141,29 +139,15 @@ static int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, 
 
       if (yp >= 0 && yp < h && yp < min_y) {
         // Traverse screen vertically
-        unsigned char* column     = &buffer[xp + min_y * stride];
-        unsigned char color_index = color_map[iu + iv * color_map_w];
         for (int line_y = min_y; line_y > yp; line_y--) {
-          *column = color_index;
-          column -= stride;
+          pixels[xp + line_y * stride] = color_palette[(int)color_map[iu + iv * color_map_w]];
+          painted_pixels++;
         }
         min_y = yp;
       }
-
-      loop_count++;
     }
   }
-
-  return loop_count;
-}
-
-static void DrawToScreen(unsigned int* pixels, int w, int h, unsigned char* buffer) {
-  unsigned char* buffer_end = buffer + (w * h);
-  while (buffer != buffer_end) {
-    *pixels = color_palette[*buffer];
-    pixels++;
-    buffer++;
-  }
+  return painted_pixels;
 }
 
 // ---------------------------------------------------------------------------
@@ -205,6 +189,8 @@ int main(int argc, char** argv) {
     return 0;
   }
 
+  InitializeEffect();
+
   // Horizontal field of view
   float hfov       = 90.0f * ((3.1416f * 2.0f) / 360.0f);  // Degrees to radians
   float half_scr_w = (float)(req_w >> 1);
@@ -212,8 +198,6 @@ int main(int argc, char** argv) {
 
   // Main loop
   g_SDLSrf = SDL_GetVideoSurface();
-  InitializeEffect(g_SDLSrf->w, g_SDLSrf->h);
-
   while (!end) {
     SDL_Event event;
 
@@ -235,13 +219,9 @@ int main(int argc, char** argv) {
     // ChronoShow("Clean", g_SDLSrf->w * g_SDLSrf->h);
 
     // Your gfx effect goes here
-    memset(color_buffer, 255, g_SDLSrf->w * g_SDLSrf->h);
     ChronoWatchReset();
-
-    int n_draw =
-        DoEffect(color_buffer, g_SDLSrf->w, g_SDLSrf->h, g_SDLSrf->pitch >> 2, dump, projection);
-    DrawToScreen(g_SDLSrf->pixels, g_SDLSrf->w, g_SDLSrf->h, color_buffer);
-
+    int n_draw = DoEffect(g_SDLSrf->pixels, g_SDLSrf->w, g_SDLSrf->h, g_SDLSrf->pitch >> 2, dump,
+                          projection);
     ChronoShow("Voxel Terrain", n_draw);
 
     // Paint vertices
