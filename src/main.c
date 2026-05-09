@@ -110,7 +110,7 @@ static void InitializeEffect(int w, int h) {
 
 static float Lerp(float a, float b, float t) { return a + t * (b - a); }
 
-static int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, float projection) {
+int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, float projection) {
   int loop_count = 0;  // Do we need this or use width * height?
 
   // Screen center
@@ -125,8 +125,8 @@ static int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, 
     float v  = cam_z;
 
     // 0 Up - h Down
-    int min_y = h - 1;
-    float dv  = 1.0f;  // TODO: check what is the right dv
+    int max_y = 0;
+    float dv  = 1.0f;
 
     // z relative to camera position
     for (int z = 1; z < depth; z++) {
@@ -136,18 +136,18 @@ static int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, 
       int iv = (int)v & (height_map_h - 1);
 
       int height = height_map[iu + iv * height_map_w];
-      int y      = height - cam_y;
+      int y      = cam_y - height;
       int yp     = cy - y * (projection / z);
 
-      if (yp >= 0 && yp < h && yp < min_y) {
+      if (yp >= 0 && yp < h && yp > max_y) {
         // Traverse screen vertically
-        unsigned char* column     = &buffer[xp + min_y * stride];
+        unsigned char* row        = &buffer[max_y + xp * stride];
         unsigned char color_index = color_map[iu + iv * color_map_w];
-        for (int line_y = min_y; line_y > yp; line_y--) {
-          *column = color_index;
-          column -= stride;
+        for (int line_y = max_y; line_y <= yp; line_y++) {
+          *row = color_index;
+          row++;
         }
-        min_y = yp;
+        max_y = yp;
       }
 
       loop_count++;
@@ -157,12 +157,60 @@ static int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, 
   return loop_count;
 }
 
+static int tile_size_x = 8;
+static int tile_size_y = 8;
+
 static void DrawToScreen(unsigned int* pixels, int w, int h, unsigned char* buffer) {
-  unsigned char* buffer_end = buffer + (w * h);
-  while (buffer != buffer_end) {
-    *pixels = color_palette[*buffer];
-    pixels++;
-    buffer++;
+  /**
+      PIXELS TRAVERSAL
+      Bottom-up within each vertical strip:
+      TOP
+       y=0  ┌─────────────────────────────┐
+            │11 12 | 23 24 | 35 36 | 47 48│
+            │ 9 10 | 21 22 | 33 34 | 45 46│
+            │ 7  8 | 19 20 | 31 32 | 43 44│
+            │ 5  6 | 17 18 | 29 30 | 41 42│
+            │ 3  4 | 15 16 | 27 28 | 39 40│
+            │ 1  2 | 13 14 | 25 26 | 37 38│
+    BOTTOM  └─────────────────────────────┘
+            ^tile0  ^tile1  ^tile2  ^tile3
+
+      BUFFER TRAVERSAL
+      TOP
+         y=0  ┌──────────────────────────────┐
+              │ 1  3 |  5  7 |  9 11 | 13 15 │
+              │ 2  4 |  6  8 | 10 12 | 14 16 │
+              │17 19 | 21 23 | 25 27 | 29 31 │
+              │18 20 | 22 24 | 26 28 | 30 32 │
+              │33 35 | 37 39 | 41 43 | 45 47 │
+              │34 36 | 38 40 | 42 44 | 46 48 │
+      BOTTOM  └──────────────────────────────┘
+            ^tile0  ^tile1  ^tile2  ^tile3
+   */
+
+  // Interleaving. It only works with powers of 2 (like textures)
+  // vvvvvvvv|uuuuuuuuuu|vv
+  //    8b       10b     2b
+
+  // for (int offset_x = 0; offset_x < w; offset_x += tile_size) {
+  //   for (int py = h - 1; py >= 0; py--) {
+  //     for (int px = offset_x; px < offset_x + tile_size; px++) {
+  //       pixels[px + py * w] = color_palette[buffer[(h - py - 1) + px * h]];
+  //     }
+  //   }
+  // }
+  int current_offset_x = 0;
+
+  for (int offset_y = h - 1; offset_y > 0; offset_y -= tile_size_y) {
+    current_offset_x++;
+    int offset_x = current_offset_x * tile_size_x;
+    for (; offset_x < offset_x + tile_size_x; offset_x += tile_size_x) {
+      for (int py = offset_y; py < offset_y + tile_size_y; py--) {
+        for (int px = offset_x; px < offset_x + tile_size_x; px++) {
+          pixels[px + py * w] = color_palette[buffer[(h - py - 1) + px * h]];
+        }
+      }
+    }
   }
 }
 
@@ -235,13 +283,12 @@ int main(int argc, char** argv) {
     // ChronoShow("Clean", g_SDLSrf->w * g_SDLSrf->h);
 
     // Your gfx effect goes here
-    memset(color_buffer, 255, g_SDLSrf->w * g_SDLSrf->h);
+    // 1 = Blue
+    memset(color_buffer, 1, g_SDLSrf->w * g_SDLSrf->h);
+
     ChronoWatchReset();
-
-    int n_draw =
-        DoEffect(color_buffer, g_SDLSrf->w, g_SDLSrf->h, g_SDLSrf->pitch >> 2, dump, projection);
+    int n_draw = DoEffect(color_buffer, g_SDLSrf->w, g_SDLSrf->h, g_SDLSrf->h, dump, projection);
     DrawToScreen(g_SDLSrf->pixels, g_SDLSrf->w, g_SDLSrf->h, color_buffer);
-
     ChronoShow("Voxel Terrain", n_draw);
 
     // Paint vertices

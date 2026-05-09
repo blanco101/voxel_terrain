@@ -124,7 +124,7 @@ static int DoEffect(unsigned int* pixels, int w, int h, int stride, int frame, f
 
     // 0 Up - h Down
     int min_y = h - 1;
-    float dv  = 1.0f;  // TODO: check what is the right dv
+    float dv  = 1.0f;
 
     // z relative to camera position
     for (int z = 1; z < depth; z++) {
