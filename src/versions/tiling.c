@@ -96,10 +96,6 @@ static unsigned char* color_buffer;
 static int height_map_w = 0, height_map_h = 0;
 static unsigned char* height_map;
 
-// Unified map
-static int map_w = 0, map_h = 0;
-static uint16_t* height_color_map;
-
 // Camera
 static float cam_x        = 0;
 static float cam_y        = 100;
@@ -109,40 +105,10 @@ static float camera_speed = 1.0f;
 static void InitializeEffect(int w, int h) {
   Load_Paletted_BMP("../maps/C1W.bmp", &color_map, &color_palette, &color_map_w, &color_map_h);
   Load_BMP("../maps/D1.bmp", &height_map, &height_map_w, &height_map_h);
-  assert(color_map_w == height_map_w && color_map_h == height_map_h &&
-         "Color and height map MUST have the same size");
-
   color_buffer = (unsigned char*)malloc(w * h);
-  assert(color_buffer);
-
-  height_color_map = (uint16_t*)malloc(w * h * sizeof(uint16_t));
-  assert(height_color_map);
-
-  printf("Size of uint16_t = %ld\n", sizeof(uint16_t));
-
-  map_w = color_map_w;
-  map_h = color_map_h;
-
-  for (int i = 0; i < map_w * map_h; i++) {
-    height_color_map[i] = (height_map[i] << 8) | color_map[i];
-  }
 }
 
 static float Lerp(float a, float b, float t) { return a + t * (b - a); }
-
-static void printBits(size_t const size, void const* const ptr) {
-  unsigned char* b = (unsigned char*)ptr;
-  unsigned char byte;
-  int i, j;
-
-  for (i = size - 1; i >= 0; i--) {
-    for (j = 7; j >= 0; j--) {
-      byte = (b[i] >> j) & 1;
-      printf("%u", byte);
-    }
-  }
-  puts("");
-}
 
 int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, float projection) {
   int loop_count = 0;  // Do we need this or use width * height?
@@ -166,27 +132,21 @@ int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, float p
     for (int z = 1; z < depth; z++) {
       u += du;
       v -= dv;
-      int iu = (int)u & (map_w - 1);
-      int iv = (int)v & (map_h - 1);
+      int iu = (int)u & (height_map_w - 1);
+      int iv = (int)v & (height_map_h - 1);
+      
+      int color_height = color_height_map[iu + iv * height_map_w]
+      height = color_height >> 8;
+      color = color_height & ((1<<8) - 1)
 
-      uint16_t height_color = height_color_map[iu + iv * map_w];
-      int height            = height_color >> 8;
-
-      int y  = cam_y - height;
-      int yp = cy - y * (projection / z);
+      int height = height_map[iu + iv * height_map_w];
+      int y      = cam_y - height;
+      int yp     = cy - y * (projection / z);
 
       if (yp >= 0 && yp < h && yp > max_y) {
         // Traverse screen vertically
         unsigned char* row        = &buffer[h - yp + xp * stride];
-        unsigned char color_index = height_color & 0xFF;
-        // unsigned char color_index2 = color_map[iu + iv * map_w];
-        // assert(color_index == color_index2);
-        // if (color_index != color_index2) {
-        //   printBits(2, &height_color);
-        //   printBits(1, &color_index2);
-        // }
-        // printf("c: %d, c2: %d\n", color_index, color_index2);
-
+        unsigned char color_index = color_map[iu + iv * color_map_w];
         for (int line_y = h - yp; line_y < h - max_y; line_y++) {
           *row = color_index;
           row++;
