@@ -96,39 +96,15 @@ static unsigned char* color_buffer;
 static int height_map_w = 0, height_map_h = 0;
 static unsigned char* height_map;
 
-// Unified map
-static int map_w = 0, map_h = 0;
-static uint16_t* height_color_map;
+// Packed map
+static int packed_map_w = 0, packed_map_h = 0;
+static uint16_t* packed_map;
 
 // Camera
 static float cam_x        = 0;
 static float cam_y        = 100;
 static float cam_z        = 0;
 static float camera_speed = 1.0f;
-
-static void InitializeEffect(int w, int h) {
-  Load_Paletted_BMP("../maps/C1W.bmp", &color_map, &color_palette, &color_map_w, &color_map_h);
-  Load_BMP("../maps/D1.bmp", &height_map, &height_map_w, &height_map_h);
-  assert(color_map_w == height_map_w && color_map_h == height_map_h &&
-         "Color and height map MUST have the same size");
-
-  color_buffer = (unsigned char*)malloc(w * h);
-  assert(color_buffer);
-
-  height_color_map = (uint16_t*)malloc(w * h * sizeof(uint16_t));
-  assert(height_color_map);
-
-  printf("Size of uint16_t = %ld\n", sizeof(uint16_t));
-
-  map_w = color_map_w;
-  map_h = color_map_h;
-
-  for (int i = 0; i < map_w * map_h; i++) {
-    height_color_map[i] = (height_map[i] << 8) | color_map[i];
-  }
-}
-
-static float Lerp(float a, float b, float t) { return a + t * (b - a); }
 
 static void printBits(size_t const size, void const* const ptr) {
   unsigned char* b = (unsigned char*)ptr;
@@ -141,8 +117,28 @@ static void printBits(size_t const size, void const* const ptr) {
       printf("%u", byte);
     }
   }
-  puts("");
 }
+
+static void InitializeEffect(int w, int h) {
+  Load_Paletted_BMP("../maps/C1W.bmp", &color_map, &color_palette, &color_map_w, &color_map_h);
+  Load_BMP("../maps/D1.bmp", &height_map, &height_map_w, &height_map_h);
+  assert(color_map_w == height_map_w && color_map_h == height_map_h &&
+         "Color and height map MUST have the same size");
+
+  color_buffer = (unsigned char*)malloc(w * h);
+  assert(color_buffer);
+
+  packed_map_w = color_map_w;
+  packed_map_h = color_map_h;
+  packed_map   = (uint16_t*)malloc(packed_map_w * packed_map_h * sizeof(uint16_t));
+  assert(packed_map);
+
+  for (int i = 0; i < packed_map_w * packed_map_h; i++) {
+    packed_map[i] = (height_map[i] << 8) | color_map[i];
+  }
+}
+
+static float Lerp(float a, float b, float t) { return a + t * (b - a); }
 
 int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, float projection) {
   int loop_count = 0;  // Do we need this or use width * height?
@@ -166,26 +162,19 @@ int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, float p
     for (int z = 1; z < depth; z++) {
       u += du;
       v -= dv;
-      int iu = (int)u & (map_w - 1);
-      int iv = (int)v & (map_h - 1);
+      int iu = (int)u & (packed_map_w - 1);
+      int iv = (int)v & (packed_map_h - 1);
 
-      uint16_t height_color = height_color_map[iu + iv * map_w];
-      int height            = height_color >> 8;
+      uint16_t packed_value = packed_map[iu + iv * packed_map_w];
+      int height            = packed_value >> 8;
 
       int y  = cam_y - height;
       int yp = cy - y * (projection / z);
 
       if (yp >= 0 && yp < h && yp > max_y) {
         // Traverse screen vertically
-        unsigned char* row        = &buffer[h - yp + xp * stride];
-        unsigned char color_index = height_color & 0xFF;
-        // unsigned char color_index2 = color_map[iu + iv * map_w];
-        // assert(color_index == color_index2);
-        // if (color_index != color_index2) {
-        //   printBits(2, &height_color);
-        //   printBits(1, &color_index2);
-        // }
-        // printf("c: %d, c2: %d\n", color_index, color_index2);
+        unsigned char* row        = &buffer[h - 1 - yp + xp * stride];
+        unsigned char color_index = packed_value & 0xFF;
 
         for (int line_y = h - yp; line_y < h - max_y; line_y++) {
           *row = color_index;
@@ -270,18 +259,6 @@ static void DrawToScreen(unsigned int* pixels, int w, int h, unsigned char* buff
 
 // ---------------------------------------------------------------------------
 
-static void DisplayVertices(unsigned int* pixels, short* drawlist, int n_vertices, int stride) {
-  int i;
-  for (i = 0; i < n_vertices; i++) {
-    int xp                   = drawlist[0];
-    int yp                   = drawlist[1];
-    pixels[xp + yp * stride] = drawlist[2];
-    drawlist += 3;
-  }
-}
-
-// ---------------------------------------------------------------------------
-
 int main(int argc, char** argv) {
   int end     = 0;
   int mouse_x = 0, mouse_y = 0;
@@ -344,10 +321,6 @@ int main(int argc, char** argv) {
     int n_draw = DoEffect(color_buffer, g_SDLSrf->w, g_SDLSrf->h, g_SDLSrf->h, dump, projection);
     DrawToScreen(g_SDLSrf->pixels, g_SDLSrf->w, g_SDLSrf->h, color_buffer);
     ChronoShow("Voxel Terrain", n_draw);
-
-    // Paint vertices
-    // DisplayVertices(g_SDLSrf->pixels, drawlist, n_draw, g_SDLSrf->pitch >> 2);
-    // ChronoShow("Preview", n_draw);
 
     // Unlock the draw surface, dump to physical screen
     ChronoWatchReset();
