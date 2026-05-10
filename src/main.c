@@ -136,6 +136,9 @@ static void InitializeEffect(int w, int h) {
   for (int i = 0; i < packed_map_w * packed_map_h; i++) {
     packed_map[i] = (height_map[i] << 8) | color_map[i];
   }
+
+  free(color_map);
+  free(height_map);
 }
 
 static float Lerp(float a, float b, float t) { return a + t * (b - a); }
@@ -145,7 +148,7 @@ int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, float p
 
   // Screen center
   int cy    = h >> 1;
-  int depth = 1024;
+  int depth = 2048;
 
   // Traverse screen horizontally
   for (int xp = 0; xp < w; xp++) {
@@ -155,11 +158,13 @@ int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, float p
     float v  = cam_z;
 
     // 0 Up - h Down
-    int max_y = 0;
-    float dv  = 1.0f;
+    int max_y       = 0;
+    int step_z      = 1;
+    unsigned char c = 0;
+    float dv        = 1.0f;
 
     // z relative to camera position
-    for (int z = 1; z < depth; z++) {
+    for (int z = 1; z < depth; z += step_z) {
       u += du;
       v -= dv;
       int iu = (int)u & (packed_map_w - 1);
@@ -173,14 +178,22 @@ int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, float p
 
       if (yp >= 0 && yp < h && yp > max_y) {
         // Traverse screen vertically
-        unsigned char* row        = &buffer[h - 1 - yp + xp * stride];
+        unsigned char* row = &buffer[h - 1 - yp + xp * stride];
+
         unsigned char color_index = packed_value & 0xFF;
 
         for (int line_y = h - yp; line_y < h - max_y; line_y++) {
-          *row = color_index;
-          row++;
+          *(row++) = color_index;
         }
+
         max_y = yp;
+      }
+
+      if (0 == (z & 0x1FF) /* 1 1111 1111 */) {
+        step_z = step_z << 1;
+        du *= 2.0f;
+        dv *= 2.0f;
+        c++;
       }
 
       loop_count++;
@@ -330,7 +343,7 @@ int main(int argc, char** argv) {
 
     // Limit framerate and return any remaining time to the OS
     // Comment this line for benchmarking
-    FramerateLimit(60);
+    // FramerateLimit(60);
 
     dump++;
 
