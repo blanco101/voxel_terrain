@@ -39,16 +39,16 @@ static void FramerateLimit(int max_fps) {
 
 // ---------------------------------------------------------------------------
 
-static void Load_Paletted_BMP(const char* file_path, unsigned char** indices,
-                              unsigned int** palette, int* width, int* height) {
-  assert(NULL != file_path && "[Load_Paletted_BMP] Invalid file path");
+static void LoadPalettedBMP(const char* file_path, unsigned char** indices, unsigned int** palette,
+                            int* width, int* height) {
+  assert(NULL != file_path && "[LoadPalettedBMP] Invalid file path");
 
   SDL_Surface* surface = SDL_LoadBMP(file_path);
-  assert(NULL != surface && "[Load_Paletted_BMP] Could not load png");
+  assert(NULL != surface && "[LoadPalettedBMP] Could not load png");
 
-  SDL_Palette* surf_palette = surface->format->palette;
-  assert(NULL != surf_palette && surface->format->BitsPerPixel == 8 &&
-         "[Load_Paletted_BMP] Incorrect bmp format");
+  SDL_Palette* bmp_palette = surface->format->palette;
+  assert(NULL != bmp_palette && surface->format->BitsPerPixel == 8 &&
+         "[LoadPalettedBMP] Incorrect bmp format");
 
   if (NULL != width) *width = surface->w;
   if (NULL != height) *height = surface->h;
@@ -59,9 +59,9 @@ static void Load_Paletted_BMP(const char* file_path, unsigned char** indices,
   }
 
   if (palette) {
-    *palette = (unsigned int*)malloc(surf_palette->ncolors * sizeof(unsigned int));
-    for (int i = 0; i < surf_palette->ncolors; i++) {
-      SDL_Color color = surf_palette->colors[i];
+    *palette = (unsigned int*)malloc(bmp_palette->ncolors * sizeof(unsigned int));
+    for (int i = 0; i < bmp_palette->ncolors; i++) {
+      SDL_Color color = bmp_palette->colors[i];
       (*palette)[i]   = RGB(color.r, color.g, color.b);
     }
   }
@@ -69,11 +69,11 @@ static void Load_Paletted_BMP(const char* file_path, unsigned char** indices,
   SDL_FreeSurface(surface);
 }
 
-static void Load_BMP(const char* file_path, unsigned char** pixels, int* width, int* height) {
-  assert(NULL != file_path && "[Load_BMP] Invalid file path");
+static void LoadBMP(const char* file_path, unsigned char** pixels, int* width, int* height) {
+  assert(NULL != file_path && "[LoadBMP] Invalid file path");
 
   SDL_Surface* surface = SDL_LoadBMP(file_path);
-  assert(NULL != surface && "[Load_BMP] Could not load png");
+  assert(NULL != surface && "[LoadBMP] Could not load png");
 
   if (NULL != width) *width = surface->w;
   if (NULL != height) *height = surface->h;
@@ -86,27 +86,19 @@ static void Load_BMP(const char* file_path, unsigned char** pixels, int* width, 
   SDL_FreeSurface(surface);
 }
 
-// Color
-static int color_map_w = 0, color_map_h = 0;
-static unsigned char* color_map;
-static unsigned int* color_palette;
-static unsigned char* color_buffer;
+static uint16_t* PackTexture(unsigned char* color_indices, unsigned char* height_map, int w,
+                             int h) {
+  uint16_t* packed_map = (uint16_t*)malloc(w * h * sizeof(uint16_t));
+  assert(packed_map);
 
-// Height map
-static int height_map_w = 0, height_map_h = 0;
-static unsigned char* height_map;
+  for (int i = 0; i < w * h; i++) {
+    packed_map[i] = (height_map[i] << 8) | color_indices[i];
+  }
 
-// Packed map
-static int packed_map_w = 0, packed_map_h = 0;
-static uint16_t* packed_map;
+  return packed_map;
+}
 
-// Camera
-static float cam_x        = 0;
-static float cam_y        = 100;
-static float cam_z        = 0;
-static float camera_speed = 1.0f;
-
-static void printBits(size_t const size, void const* const ptr) {
+static void PrintBits(size_t const size, void const* const ptr) {
   unsigned char* b = (unsigned char*)ptr;
   unsigned char byte;
   int i, j;
@@ -119,121 +111,173 @@ static void printBits(size_t const size, void const* const ptr) {
   }
 }
 
-static void InitializeEffect(int w, int h) {
-  Load_Paletted_BMP("../maps/C1W.bmp", &color_map, &color_palette, &color_map_w, &color_map_h);
-  Load_BMP("../maps/D1.bmp", &height_map, &height_map_w, &height_map_h);
-  assert(color_map_w == height_map_w && color_map_h == height_map_h &&
+#define MIP_MAP_LEVELS 3
+
+static uint16_t* LoadBMPMipmapLevel(int level, const char* color_path, const char* height_path,
+                                    unsigned int** palette, int* width, int* height) {
+  assert(level < MIP_MAP_LEVELS);
+  assert(color_path);
+  assert(height_path);
+
+  static char color_full_path[512];
+  static char height_full_path[512];
+
+  sprintf(color_full_path, "%s_L%d.bmp", color_path, level);
+  sprintf(height_full_path, "%s_L%d.bmp", height_path, level);
+  fprintf(stdout, "Loading %s\n", color_full_path);
+  fprintf(stdout, "Loading %s\n", height_full_path);
+
+  unsigned char *color_indices, *height_map;
+  int color_w, color_h;
+  int height_w, height_h;
+
+  LoadPalettedBMP(color_full_path, &color_indices, palette, &color_w, &color_h);
+  LoadBMP(height_full_path, &height_map, &height_w, &height_h);
+
+  assert(color_w == height_w && color_h == height_h &&
          "Color and height map MUST have the same size");
 
-  color_buffer = (unsigned char*)malloc(w * h);
-  assert(color_buffer);
+  if (NULL != width) *width = color_w;
+  if (NULL != height) *height = color_h;
 
-  packed_map_w = color_map_w;
-  packed_map_h = color_map_h;
-  packed_map   = (uint16_t*)malloc(packed_map_w * packed_map_h * sizeof(uint16_t));
-  assert(packed_map);
-
-  for (int i = 0; i < packed_map_w * packed_map_h; i++) {
-    packed_map[i] = (height_map[i] << 8) | color_map[i];
-  }
-
-  free(color_map);
+  uint16_t* packed = PackTexture(color_indices, height_map, color_w, color_h);
+  free(color_indices);
   free(height_map);
+  return packed;
+}
+
+// Texture Size
+static int base_map_width;
+static int base_map_height;
+
+static unsigned int* palette;
+static unsigned char* screen_color_indices;
+
+// Camera
+static float camera_x     = 0;
+static float camera_y     = 100;
+static float camera_z     = 0;
+static float camera_speed = 1.0f;
+
+// Mipmap Array
+static uint16_t* mip_maps[MIP_MAP_LEVELS];
+
+static void InitializeEffect(int screen_w, int screen_h) {
+  int w, h;
+
+  mip_maps[0] = LoadBMPMipmapLevel(0, "../maps/C1W", "../maps/D1", &palette, &base_map_width,
+                                   &base_map_height);
+  mip_maps[1] = LoadBMPMipmapLevel(1, "../maps/C1W", "../maps/D1", &palette, &w, &h);
+  assert(base_map_width >> 1 == w && base_map_height >> 1 == h);
+  mip_maps[2] = LoadBMPMipmapLevel(2, "../maps/C1W", "../maps/D1", &palette, &w, &h);
+  assert(base_map_width >> 2 == w && base_map_height >> 2 == h);
+
+  screen_color_indices = (unsigned char*)malloc(screen_w * screen_h);
+  assert(screen_color_indices);
 }
 
 static float Lerp(float a, float b, float t) { return a + t * (b - a); }
 
 int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, float projection) {
-  int loop_count = 0;  // Do we need this or use width * height?
-
   // Screen center
-  int cy    = h >> 1;
-  int depth = 2048;
+  int screen_center_y = h >> 1;
+  int depth           = 4096;
+  int loops           = 0;
 
   // Traverse screen horizontally
   for (int xp = 0; xp < w; xp++) {
+    float u = camera_x;
+    float v = camera_z;
+
     // Assumes FOV of 90 degrees
     float du = Lerp(-1, 1, (float)xp / (float)w);
-    float u  = cam_x;
-    float v  = cam_z;
+    float dv = 1.0f;
 
     // 0 Up - h Down
-    int max_y       = 0;
-    int step_z      = 1;
-    unsigned char c = 0;
-    float dv        = 1.0f;
+    int highest_drawn_col               = 0;
+    int step_z                          = 1;
+    int mip_level                       = 0;
+    uint16_t* active_mip                = mip_maps[mip_level];
+    int active_mip_width                = base_map_width;
+    int active_mip_height               = base_map_height;
+    int mip_level_switch_distance       = 512;
+    unsigned char mip_level_debug_color = 0;
 
     // z relative to camera position
     for (int z = 1; z < depth; z += step_z) {
+      loops++;
       u += du;
       v -= dv;
-      int iu = (int)u & (packed_map_w - 1);
-      int iv = (int)v & (packed_map_h - 1);
+      int iu = (int)u & (active_mip_width - 1);
+      int iv = (int)v & (active_mip_height - 1);
 
-      uint16_t packed_value = packed_map[iu + iv * packed_map_w];
-      int height            = packed_value >> 8;
+      unsigned int texel = active_mip[iu + iv * active_mip_width];
+      int terrain_height = texel >> 8;
 
-      int y  = cam_y - height;
-      int yp = cy - y * (projection / z);
+      int height_delta = camera_y - terrain_height;
+      // TODO: precalculate projection / z
+      int yp = screen_center_y - height_delta * (projection / z);
 
-      if (yp >= 0 && yp < h && yp > max_y) {
-        // Traverse screen vertically
-        unsigned char* row = &buffer[h - 1 - yp + xp * stride];
+      if (yp >= 0 && yp < h && yp > highest_drawn_col) {
+        unsigned char* row         = &buffer[h - 1 - yp + xp * stride];
+        unsigned int palette_index = texel & 0xFF;
 
-        unsigned char color_index = packed_value & 0xFF;
-
-        for (int line_y = h - yp; line_y < h - max_y; line_y++) {
-          *(row++) = color_index;
+        // Draw into the transposed color buffer
+        for (int line_y = h - yp; line_y < h - highest_drawn_col; line_y++) {
+          *(row++) = palette_index;
+          // *(row++) = mip_level_debug_color;
         }
 
-        max_y = yp;
+        highest_drawn_col = yp;
       }
 
-      if (0 == (z & 0x1FF) /* 1 1111 1111 */) {
-        step_z = step_z << 1;
-        du *= 2.0f;
-        dv *= 2.0f;
-        c++;
+      if ((z & (mip_level_switch_distance - 1)) == 0 && mip_level < MIP_MAP_LEVELS - 1) {
+        mip_level_debug_color++;
+        ++mip_level;
+        mip_level_switch_distance <<= 2;
+        active_mip = mip_maps[mip_level];
+        u *= 0.5f;
+        v *= 0.5f;
+        active_mip_width >>= 1;
+        active_mip_height >>= 1;
+        step_z *= 2;
       }
-
-      loop_count++;
     }
   }
 
-  return loop_count;
+  return loops;
 }
 
-static int tile_size   = 16;
-static int tile_size_x = 8;
-static int tile_size_y = 8;
+static int tile_size = 256;
 
 static void DrawToScreen(unsigned int* pixels, int w, int h, unsigned char* buffer) {
   /**
-      PIXELS TRAVERSAL
-      Bottom-up within each vertical strip:
-      TOP
-       y=0  ┌─────────────────────────────┐
-            │11 12 | 23 24 | 35 36 | 47 48│
-            │ 9 10 | 21 22 | 33 34 | 45 46│
-            │ 7  8 | 19 20 | 31 32 | 43 44│
-            │ 5  6 | 17 18 | 29 30 | 41 42│
-            │ 3  4 | 15 16 | 27 28 | 39 40│
-            │ 1  2 | 13 14 | 25 26 | 37 38│
-    BOTTOM  └─────────────────────────────┘
-            ^tile0  ^tile1  ^tile2  ^tile3
+     PIXELS TRAVERSAL
+     TOP
+      y=0  ┌─────────────────────────────┐
+           │ 1  2 | 13 14 | 25 26 | 37 38│
+           │ 3  4 | 15 16 | 27 28 | 39 40│
+           │ 5  6 | 17 18 | 29 30 | 41 42│
+           │ 7  8 | 19 20 | 31 32 | 43 44│
+           │ 9 10 | 21 22 | 33 34 | 45 46│
+           │11 12 | 23 24 | 35 36 | 47 48│
+   BOTTOM  └─────────────────────────────┘
+           ^tile0  ^tile1  ^tile2  ^tile3
 
-      BUFFER TRAVERSAL
-      TOP
-         y=0  ┌──────────────────────────────┐
-              │ 1  3 |  5  7 |  9 11 | 13 15 │
-              │ 2  4 |  6  8 | 10 12 | 14 16 │
-              │17 19 | 21 23 | 25 27 | 29 31 │
-              │18 20 | 22 24 | 26 28 | 30 32 │
-              │33 35 | 37 39 | 41 43 | 45 47 │
-              │34 36 | 38 40 | 42 44 | 46 48 │
-      BOTTOM  └──────────────────────────────┘
-            ^tile0  ^tile1  ^tile2  ^tile3
-   */
+     BUFFER TRAVERSAL
+     TOP
+      y=0  ┌───────────────────────┐
+           │ 1  3  |  5  7 |  9 11 │
+           │ 2  4  |  6  8 | 10 12 │
+           │ 13 15 | 17 19 | 21 23 │
+           │ 14 16 | 18 20 | 22 24 │
+           │ 25 27 | 29 31 | 33 35 │
+           │ 26 28 | 30 32 | 34 36 │
+           │ 37 39 | 41 43 | 45 47 │
+           │ 38 40 | 42 44 | 46 48 │
+   BOTTOM  └───────────────────────┘
+           ^tile0  ^tile1  ^tile2  ^tile3
+  */
 
   // Interleaving. It only works with powers of 2 (like textures)
   // vvvvvvvv|uuuuuuuuuu|vv
@@ -242,7 +286,7 @@ static void DrawToScreen(unsigned int* pixels, int w, int h, unsigned char* buff
   // No Tiling
   // for (int py = 0; py < h; py++) {
   //   for (int px = 0; px < w; px++) {
-  //     pixels[px + py * w] = color_palette[buffer[py + px * h]];
+  //     pixels[px + py * w] = palette[buffer[py + px * h]];
   //   }
   // }
 
@@ -250,7 +294,7 @@ static void DrawToScreen(unsigned int* pixels, int w, int h, unsigned char* buff
   for (int offset_x = 0; offset_x < w; offset_x += tile_size) {
     for (int py = 0; py < h; py++) {
       for (int px = offset_x; px < offset_x + tile_size; px++) {
-        pixels[px + py * w] = color_palette[buffer[py + px * h]];
+        pixels[px + py * w] = palette[buffer[py + px * h]];
       }
     }
   }
@@ -263,7 +307,7 @@ static void DrawToScreen(unsigned int* pixels, int w, int h, unsigned char* buff
   //   for (; offset_x < offset_x + tile_size_x; offset_x += tile_size_x) {
   //     for (int py = offset_y; py < offset_y + tile_size_y; py--) {
   //       for (int px = offset_x; px < offset_x + tile_size_x; px++) {
-  //         pixels[px + py * w] = color_palette[buffer[(h - py - 1) + px * h]];
+  //         pixels[px + py * w] = palette[buffer[(h - py - 1) + px * h]];
   //       }
   //     }
   //   }
@@ -273,7 +317,7 @@ static void DrawToScreen(unsigned int* pixels, int w, int h, unsigned char* buff
 // ---------------------------------------------------------------------------
 
 int main(int argc, char** argv) {
-  int end     = 0;
+  int quit    = 0;
   int mouse_x = 0, mouse_y = 0;
   SDL_Surface* g_SDLSrf;
   int req_w = 1024;
@@ -306,16 +350,16 @@ int main(int argc, char** argv) {
   g_SDLSrf = SDL_GetVideoSurface();
   InitializeEffect(g_SDLSrf->w, g_SDLSrf->h);
 
-  while (!end) {
+  while (!quit) {
     SDL_Event event;
 
     unsigned char* keyboard_state = SDL_GetKeyState(NULL);
-    if (keyboard_state[SDLK_w]) cam_z -= camera_speed;
-    if (keyboard_state[SDLK_s]) cam_z += camera_speed;
-    if (keyboard_state[SDLK_a]) cam_x -= camera_speed;
-    if (keyboard_state[SDLK_d]) cam_x += camera_speed;
-    if (keyboard_state[SDLK_q]) cam_y += camera_speed;
-    if (keyboard_state[SDLK_e]) cam_y -= camera_speed;
+    if (keyboard_state[SDLK_w]) camera_z -= camera_speed;
+    if (keyboard_state[SDLK_s]) camera_z += camera_speed;
+    if (keyboard_state[SDLK_a]) camera_x -= camera_speed;
+    if (keyboard_state[SDLK_d]) camera_x += camera_speed;
+    if (keyboard_state[SDLK_q]) camera_y += camera_speed;
+    if (keyboard_state[SDLK_e]) camera_y -= camera_speed;
 
     ChronoWatchReset();
     // Draw vertices; don't modify this section
@@ -328,12 +372,14 @@ int main(int argc, char** argv) {
 
     // Your gfx effect goes here
     // 1 = Blue
-    memset(color_buffer, 1, g_SDLSrf->w * g_SDLSrf->h);
+    memset(screen_color_indices, 1, g_SDLSrf->w * g_SDLSrf->h);
 
     ChronoWatchReset();
-    int n_draw = DoEffect(color_buffer, g_SDLSrf->w, g_SDLSrf->h, g_SDLSrf->h, dump, projection);
-    DrawToScreen(g_SDLSrf->pixels, g_SDLSrf->w, g_SDLSrf->h, color_buffer);
-    ChronoShow("Voxel Terrain", n_draw);
+    int loops =
+        DoEffect(screen_color_indices, g_SDLSrf->w, g_SDLSrf->h, g_SDLSrf->h, dump, projection);
+    ChronoShow("Voxel Terrain", loops);
+    DrawToScreen(g_SDLSrf->pixels, g_SDLSrf->w, g_SDLSrf->h, screen_color_indices);
+    ChronoShow("Draw To Screen", g_SDLSrf->w * g_SDLSrf->h);
 
     // Unlock the draw surface, dump to physical screen
     ChronoWatchReset();
@@ -364,7 +410,7 @@ int main(int argc, char** argv) {
           if (camera_speed > 10.0f) camera_speed = 10.0f;
           break;
         case SDL_QUIT:
-          end = 1;
+          quit = 1;
           break;
       }
     }
