@@ -12,6 +12,8 @@
 // ---------------------------------------------------------------------------
 
 #define RGB(r, g, b) b | (g << 8) | (r << 16)
+#define MIP_MAP_LEVELS 3
+#define RENDER_DEPTH 4096
 
 static int cpu_mhz = 0;
 static int dump    = 0;
@@ -111,8 +113,6 @@ static void PrintBits(size_t const size, void const* const ptr) {
   }
 }
 
-#define MIP_MAP_LEVELS 3
-
 static uint16_t* LoadBMPMipmapLevel(int level, const char* color_path, const char* height_path,
                                     unsigned int** palette, int* width, int* height) {
   assert(level < MIP_MAP_LEVELS);
@@ -150,7 +150,10 @@ static uint16_t* LoadBMPMipmapLevel(int level, const char* color_path, const cha
 static int base_map_width;
 static int base_map_height;
 
+// Color palette
 static unsigned int* palette;
+
+// Transposed buffer to write horizontally during the effect calculation
 static unsigned char* screen_color_indices;
 
 // Camera
@@ -162,7 +165,10 @@ static float camera_speed = 1.0f;
 // Mipmap Array
 static uint16_t* mip_maps[MIP_MAP_LEVELS];
 
-static void InitializeEffect(int screen_w, int screen_h) {
+// Precalculate
+static float perspective_divisions[RENDER_DEPTH];
+
+static void InitializeEffect(int screen_w, int screen_h, float projection) {
   int w, h;
 
   mip_maps[0] = LoadBMPMipmapLevel(0, "../maps/C1W", "../maps/D1", &palette, &base_map_width,
@@ -174,14 +180,17 @@ static void InitializeEffect(int screen_w, int screen_h) {
 
   screen_color_indices = (unsigned char*)malloc(screen_w * screen_h);
   assert(screen_color_indices);
+
+  for (int z = 0; z < RENDER_DEPTH; ++z) {
+    perspective_divisions[z] = projection / z;
+  }
 }
 
 static float Lerp(float a, float b, float t) { return a + t * (b - a); }
 
-int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, float projection) {
+int DoEffect(unsigned char* buffer, int w, int h, int stride) {
   // Screen center
   int screen_center_y = h >> 1;
-  int depth           = 4096;
   int loops           = 0;
 
   // Traverse screen horizontally
@@ -194,17 +203,17 @@ int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, float p
     float dv = 1.0f;
 
     // 0 Up - h Down
-    int highest_drawn_col               = 0;
-    int step_z                          = 1;
     int mip_level                       = 0;
     uint16_t* active_mip                = mip_maps[mip_level];
     int active_mip_width                = base_map_width;
     int active_mip_height               = base_map_height;
+    int highest_drawn_col               = 0;
+    int step_z                          = 1;
     int mip_level_switch_distance       = 512;
     unsigned char mip_level_debug_color = 0;
 
     // z relative to camera position
-    for (int z = 1; z < depth; z += step_z) {
+    for (int z = 1; z < RENDER_DEPTH; z += step_z) {
       loops++;
       u += du;
       v -= dv;
@@ -215,8 +224,7 @@ int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, float p
       int terrain_height = texel >> 8;
 
       int height_delta = camera_y - terrain_height;
-      // TODO: precalculate projection / z
-      int yp = screen_center_y - height_delta * (projection / z);
+      int yp           = screen_center_y - height_delta * perspective_divisions[z];
 
       if (yp >= 0 && yp < h && yp > highest_drawn_col) {
         unsigned char* row         = &buffer[h - 1 - yp + xp * stride];
@@ -233,9 +241,8 @@ int DoEffect(unsigned char* buffer, int w, int h, int stride, int frame, float p
 
       if ((z & (mip_level_switch_distance - 1)) == 0 && mip_level < MIP_MAP_LEVELS - 1) {
         mip_level_debug_color++;
-        ++mip_level;
+        active_mip = mip_maps[++mip_level];
         mip_level_switch_distance <<= 2;
-        active_mip = mip_maps[mip_level];
         u *= 0.5f;
         v *= 0.5f;
         active_mip_width >>= 1;
@@ -317,8 +324,7 @@ static void DrawToScreen(unsigned int* pixels, int w, int h, unsigned char* buff
 // ---------------------------------------------------------------------------
 
 int main(int argc, char** argv) {
-  int quit    = 0;
-  int mouse_x = 0, mouse_y = 0;
+  int quit = 0;
   SDL_Surface* g_SDLSrf;
   int req_w = 1024;
   int req_h = 768;
@@ -348,7 +354,7 @@ int main(int argc, char** argv) {
 
   // Main loop
   g_SDLSrf = SDL_GetVideoSurface();
-  InitializeEffect(g_SDLSrf->w, g_SDLSrf->h);
+  InitializeEffect(g_SDLSrf->w, g_SDLSrf->h, projection);
 
   while (!quit) {
     SDL_Event event;
@@ -375,8 +381,7 @@ int main(int argc, char** argv) {
     memset(screen_color_indices, 1, g_SDLSrf->w * g_SDLSrf->h);
 
     ChronoWatchReset();
-    int loops =
-        DoEffect(screen_color_indices, g_SDLSrf->w, g_SDLSrf->h, g_SDLSrf->h, dump, projection);
+    int loops = DoEffect(screen_color_indices, g_SDLSrf->w, g_SDLSrf->h, g_SDLSrf->h);
     ChronoShow("Voxel Terrain", loops);
     DrawToScreen(g_SDLSrf->pixels, g_SDLSrf->w, g_SDLSrf->h, screen_color_indices);
     ChronoShow("Draw To Screen", g_SDLSrf->w * g_SDLSrf->h);
@@ -396,10 +401,6 @@ int main(int argc, char** argv) {
     // Recoger eventos de la ventana
     while (SDL_PollEvent(&event)) {
       switch (event.type) {
-        case SDL_MOUSEMOTION:
-          mouse_x = event.motion.x;
-          mouse_y = event.motion.y;
-          break;
         case SDL_MOUSEBUTTONDOWN:
           if (SDL_BUTTON_WHEELDOWN == event.button.button) {
             camera_speed -= 1.0f;
