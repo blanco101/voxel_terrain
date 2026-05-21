@@ -14,6 +14,12 @@
 #define RGB(r, g, b) b | (g << 8) | (r << 16)
 #define MIP_MAP_LEVELS 3
 #define RENDER_DEPTH 4096
+#define MAX_CAMERA_SPEED 100.0f
+
+// v * 2^(fx)
+#define FLOAT_TO_FIXED(fx, v) ((int)(v * (float)(1 << fx)))
+#define FIXED_TO_FLOAT(fx, v) ((v >> fx) + (float)(v & ((1 << fx) - 1)) / (float)(1 << fx))
+#define INT_TO_FIXED(fx, v) (v << fx)
 
 static int cpu_mhz = 0;
 static int dump    = 0;
@@ -166,7 +172,7 @@ static float camera_speed = 1.0f;
 static uint16_t* mip_maps[MIP_MAP_LEVELS];
 
 // Precalculate
-static float perspective_divisions[RENDER_DEPTH];
+static int perspective_divisions[RENDER_DEPTH];
 
 static void InitializeEffect(int screen_w, int screen_h, float projection) {
   int w, h;
@@ -182,16 +188,22 @@ static void InitializeEffect(int screen_w, int screen_h, float projection) {
   assert(screen_color_indices);
 
   for (int z = 0; z < RENDER_DEPTH; ++z) {
-    perspective_divisions[z] = projection / z;
+    perspective_divisions[z] = FLOAT_TO_FIXED(8, projection / z);
   }
 }
 
 static float Lerp(float a, float b, float t) { return a + t * (b - a); }
 
-int DoEffect(unsigned char* buffer, int w, int h, int stride) {
+// TODO: Fixed point arithmetic
+// TODO: Different for loops per mipmap
+
+int VoxelTerrain(unsigned char* buffer, int w, int h, int stride) {
   // Screen center
   int screen_center_y = h >> 1;
   int loops           = 0;
+
+  // Metaphor: Throw rays from the camera (eye) towards the screen.
+  // The direcion of the rays change (du and dv) depending on the screen X.
 
   // Traverse screen horizontally
   for (int xp = 0; xp < w; xp++) {
@@ -212,7 +224,9 @@ int DoEffect(unsigned char* buffer, int w, int h, int stride) {
     int mip_level_switch_distance       = 512;
     unsigned char mip_level_debug_color = 0;
 
-    // z relative to camera position
+    unsigned char* row = &buffer[xp * stride];
+
+    // Throw a ray towards the screen and move RENDER_DEPTH steps
     for (int z = 1; z < RENDER_DEPTH; z += step_z) {
       loops++;
       u += du;
@@ -224,14 +238,13 @@ int DoEffect(unsigned char* buffer, int w, int h, int stride) {
       int terrain_height = texel >> 8;
 
       int height_delta = camera_y - terrain_height;
-      int yp           = screen_center_y - height_delta * perspective_divisions[z];
+      int yp = screen_center_y - height_delta * FIXED_TO_FLOAT(8, perspective_divisions[z]);
 
       if (yp >= 0 && yp < h && yp > highest_drawn_col) {
-        unsigned char* row         = &buffer[h - 1 - yp + xp * stride];
         unsigned int palette_index = texel & 0xFF;
 
         // Draw into the transposed color buffer
-        for (int line_y = h - yp; line_y < h - highest_drawn_col; line_y++) {
+        for (int line_y = highest_drawn_col + 1; line_y <= yp; line_y++) {
           *(row++) = palette_index;
           // *(row++) = mip_level_debug_color;
         }
@@ -240,7 +253,7 @@ int DoEffect(unsigned char* buffer, int w, int h, int stride) {
       }
 
       if ((z & (mip_level_switch_distance - 1)) == 0 && mip_level < MIP_MAP_LEVELS - 1) {
-        mip_level_debug_color++;
+        // mip_level_debug_color++;
         active_mip = mip_maps[++mip_level];
         mip_level_switch_distance <<= 2;
         u *= 0.5f;
@@ -255,19 +268,19 @@ int DoEffect(unsigned char* buffer, int w, int h, int stride) {
   return loops;
 }
 
-static int tile_size = 256;
+static int tile_size = 128;
 
 static void DrawToScreen(unsigned int* pixels, int w, int h, unsigned char* buffer) {
   /**
      PIXELS TRAVERSAL
      TOP
       y=0  ┌─────────────────────────────┐
-           │ 1  2 | 13 14 | 25 26 | 37 38│
-           │ 3  4 | 15 16 | 27 28 | 39 40│
-           │ 5  6 | 17 18 | 29 30 | 41 42│
-           │ 7  8 | 19 20 | 31 32 | 43 44│
-           │ 9 10 | 21 22 | 33 34 | 45 46│
-           │11 12 | 23 24 | 35 36 | 47 48│
+           │11 12 | 13 14 | 25 26 | 37 38│
+           │ 9 10 | 15 16 | 27 28 | 39 40│
+           │ 7  8 | 17 18 | 29 30 | 41 42│
+           │ 5  6 | 19 20 | 31 32 | 43 44│
+           │ 3  4 | 21 22 | 33 34 | 45 46│
+           │ 1  2 | 23 24 | 35 36 | 47 48│
    BOTTOM  └─────────────────────────────┘
            ^tile0  ^tile1  ^tile2  ^tile3
 
@@ -297,11 +310,25 @@ static void DrawToScreen(unsigned int* pixels, int w, int h, unsigned char* buff
   //   }
   // }
 
+  // for (int py = 0; py < h; py++) {
+  //   unsigned int* p = &pixels[py * w];
+  //   unsigned char* b = &buffer[py * h];
+  //   for (int px = 0; px < w; px++) {
+  //     *p = palette[1];
+  //     p++;
+  //     // b++;
+  //   }
+  // }
+
   // Tiling
   for (int offset_x = 0; offset_x < w; offset_x += tile_size) {
     for (int py = 0; py < h; py++) {
-      for (int px = offset_x; px < offset_x + tile_size; px++) {
-        pixels[px + py * w] = palette[buffer[py + px * h]];
+      unsigned int* p  = &pixels[offset_x + (h - 1 - py) * w];
+      unsigned char* b = &buffer[py + offset_x * h];
+      for (int i = 0; i < tile_size; i++) {
+        *p = palette[*b];
+        b += h;
+        p++;
       }
     }
   }
@@ -381,7 +408,7 @@ int main(int argc, char** argv) {
     memset(screen_color_indices, 1, g_SDLSrf->w * g_SDLSrf->h);
 
     ChronoWatchReset();
-    int loops = DoEffect(screen_color_indices, g_SDLSrf->w, g_SDLSrf->h, g_SDLSrf->h);
+    int loops = VoxelTerrain(screen_color_indices, g_SDLSrf->w, g_SDLSrf->h, g_SDLSrf->h);
     ChronoShow("Voxel Terrain", loops);
     DrawToScreen(g_SDLSrf->pixels, g_SDLSrf->w, g_SDLSrf->h, screen_color_indices);
     ChronoShow("Draw To Screen", g_SDLSrf->w * g_SDLSrf->h);
@@ -408,7 +435,7 @@ int main(int argc, char** argv) {
             camera_speed += 1.0f;
           }
           if (camera_speed < 0.0f) camera_speed = 0.0f;
-          if (camera_speed > 10.0f) camera_speed = 10.0f;
+          if (camera_speed > MAX_CAMERA_SPEED) camera_speed = MAX_CAMERA_SPEED;
           break;
         case SDL_QUIT:
           quit = 1;
