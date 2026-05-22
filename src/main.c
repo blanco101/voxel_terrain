@@ -14,12 +14,16 @@
 #define RGB(r, g, b) b | (g << 8) | (r << 16)
 #define MIP_MAP_LEVELS 3
 #define RENDER_DEPTH 4096
-#define MAX_CAMERA_SPEED 100.0f
+#define MAX_CAMERA_SPEED 100
 
 // v * 2^(fx)
-#define FLOAT_TO_FIXED(fx, v) ((int)(v * (float)(1 << fx)))
-#define FIXED_TO_FLOAT(fx, v) ((v >> fx) + (float)(v & ((1 << fx) - 1)) / (float)(1 << fx))
-#define INT_TO_FIXED(fx, v) (v << fx)
+#define FLOAT_TO_FIXED_8(v) ((int)((v) * 256.0f))
+#define INT_TO_FIXED_8(v) ((v) << 8)
+#define FIXED_8_TO_FLOAT(v) ((float)(v) / 256.0f)
+#define FIXED_8_TO_INT(v) ((v) >> 8)
+#define FIXED_8_MUL(a, b) ((int)(((long long)(a) * (long long)(b)) >> 8))
+// Overflows for big numbers
+// #define FIXED_8_MUL(a, b) (((a) * (b)) >> 8)
 
 static int cpu_mhz = 0;
 static int dump    = 0;
@@ -163,10 +167,10 @@ static unsigned int* palette;
 static unsigned char* screen_color_indices;
 
 // Camera
-static float camera_x     = 0;
-static float camera_y     = 100;
-static float camera_z     = 0;
-static float camera_speed = 1.0f;
+static int camera_x     = INT_TO_FIXED_8(0);
+static int camera_y     = INT_TO_FIXED_8(100);
+static int camera_z     = INT_TO_FIXED_8(0);
+static int camera_speed = INT_TO_FIXED_8(1);
 
 // Mipmap Array
 static uint16_t* mip_maps[MIP_MAP_LEVELS];
@@ -188,18 +192,17 @@ static void InitializeEffect(int screen_w, int screen_h, float projection) {
   assert(screen_color_indices);
 
   for (int z = 0; z < RENDER_DEPTH; ++z) {
-    perspective_divisions[z] = FLOAT_TO_FIXED(8, projection / z);
+    perspective_divisions[z] = FLOAT_TO_FIXED_8(projection / z);
   }
 }
 
 static float Lerp(float a, float b, float t) { return a + t * (b - a); }
 
-// TODO: Fixed point arithmetic
 // TODO: Different for loops per mipmap
 
 int VoxelTerrain(unsigned char* buffer, int w, int h, int stride) {
   // Screen center
-  int screen_center_y = h >> 1;
+  int screen_center_y = INT_TO_FIXED_8(h >> 1);
   int loops           = 0;
 
   // Metaphor: Throw rays from the camera (eye) towards the screen.
@@ -207,12 +210,12 @@ int VoxelTerrain(unsigned char* buffer, int w, int h, int stride) {
 
   // Traverse screen horizontally
   for (int xp = 0; xp < w; xp++) {
-    float u = camera_x;
-    float v = camera_z;
+    int u = camera_x;
+    int v = camera_z;
 
     // Assumes FOV of 90 degrees
-    float du = Lerp(-1, 1, (float)xp / (float)w);
-    float dv = 1.0f;
+    int du = FLOAT_TO_FIXED_8(Lerp(-1, 1, (float)xp / (float)w));
+    int dv = INT_TO_FIXED_8(1);
 
     // 0 Up - h Down
     int mip_level                       = 0;
@@ -231,14 +234,15 @@ int VoxelTerrain(unsigned char* buffer, int w, int h, int stride) {
       loops++;
       u += du;
       v -= dv;
-      int iu = (int)u & (active_mip_width - 1);
-      int iv = (int)v & (active_mip_height - 1);
+      int iu = FIXED_8_TO_INT(u) & (active_mip_width - 1);
+      int iv = FIXED_8_TO_INT(v) & (active_mip_height - 1);
 
       unsigned int texel = active_mip[iu + iv * active_mip_width];
-      int terrain_height = texel >> 8;
+      int terrain_height = INT_TO_FIXED_8(texel >> 8);
 
       int height_delta = camera_y - terrain_height;
-      int yp = screen_center_y - height_delta * FIXED_TO_FLOAT(8, perspective_divisions[z]);
+      int yp =
+          FIXED_8_TO_INT(screen_center_y - FIXED_8_MUL(height_delta, perspective_divisions[z]));
 
       if (yp >= 0 && yp < h && yp > highest_drawn_col) {
         unsigned int palette_index = texel & 0xFF;
@@ -298,27 +302,6 @@ static void DrawToScreen(unsigned int* pixels, int w, int h, unsigned char* buff
    BOTTOM  └───────────────────────┘
            ^tile0  ^tile1  ^tile2  ^tile3
   */
-
-  // Interleaving. It only works with powers of 2 (like textures)
-  // vvvvvvvv|uuuuuuuuuu|vv
-  //    8b       10b     2b
-
-  // No Tiling
-  // for (int py = 0; py < h; py++) {
-  //   for (int px = 0; px < w; px++) {
-  //     pixels[px + py * w] = palette[buffer[py + px * h]];
-  //   }
-  // }
-
-  // for (int py = 0; py < h; py++) {
-  //   unsigned int* p = &pixels[py * w];
-  //   unsigned char* b = &buffer[py * h];
-  //   for (int px = 0; px < w; px++) {
-  //     *p = palette[1];
-  //     p++;
-  //     // b++;
-  //   }
-  // }
 
   // Tiling
   for (int offset_x = 0; offset_x < w; offset_x += tile_size) {
@@ -430,12 +413,12 @@ int main(int argc, char** argv) {
       switch (event.type) {
         case SDL_MOUSEBUTTONDOWN:
           if (SDL_BUTTON_WHEELDOWN == event.button.button) {
-            camera_speed -= 1.0f;
+            camera_speed -= INT_TO_FIXED_8(1);
           } else if (SDL_BUTTON_WHEELUP == event.button.button) {
-            camera_speed += 1.0f;
+            camera_speed += INT_TO_FIXED_8(1);
           }
-          if (camera_speed < 0.0f) camera_speed = 0.0f;
-          if (camera_speed > MAX_CAMERA_SPEED) camera_speed = MAX_CAMERA_SPEED;
+          if (camera_speed < 0.0f) camera_speed = 0;
+          if (camera_speed > INT_TO_FIXED_8(MAX_CAMERA_SPEED)) camera_speed = MAX_CAMERA_SPEED;
           break;
         case SDL_QUIT:
           quit = 1;
