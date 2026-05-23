@@ -16,14 +16,14 @@
 #define RENDER_DEPTH 4096
 #define MAX_CAMERA_SPEED 100
 
-// v * 2^(fx)
-#define FLOAT_TO_FIXED_8(v) ((int)((v) * 256.0f))
-#define INT_TO_FIXED_8(v) ((v) << 8)
-#define FIXED_8_TO_FLOAT(v) ((float)(v) / 256.0f)
-#define FIXED_8_TO_INT(v) ((v) >> 8)
-#define FIXED_8_MUL(a, b) ((int)(((long long)(a) * (long long)(b)) >> 8))
-// Overflows for big numbers
-// #define FIXED_8_MUL(a, b) (((a) * (b)) >> 8)
+// FX 8 looks horrible
+
+#define FLOAT_TO_FX_12(v) ((int)((v) * 4096.0f))
+#define INT_TO_FX_12(v) ((v) << 12)
+#define FX_12_TO_FLOAT(v) ((float)(v) / 4096.0f)
+#define FX_12_TO_INT(v) ((v) >> 12)
+#define FX_12_MUL(a, b) ((int)(((long long)(a) * (long long)(b)) >> 12))
+#define FX_12_DIV2(v) ((v) >> 1)
 
 static int cpu_mhz = 0;
 static int dump    = 0;
@@ -167,10 +167,10 @@ static unsigned int* palette;
 static unsigned char* screen_color_indices;
 
 // Camera
-static int camera_x     = INT_TO_FIXED_8(0);
-static int camera_y     = INT_TO_FIXED_8(100);
-static int camera_z     = INT_TO_FIXED_8(0);
-static int camera_speed = INT_TO_FIXED_8(1);
+static int camera_x     = INT_TO_FX_12(0);
+static int camera_y     = INT_TO_FX_12(100);
+static int camera_z     = INT_TO_FX_12(0);
+static int camera_speed = INT_TO_FX_12(1);
 
 // Mipmap Array
 static uint16_t* mip_maps[MIP_MAP_LEVELS];
@@ -192,18 +192,48 @@ static void InitializeEffect(int screen_w, int screen_h, float projection) {
   assert(screen_color_indices);
 
   for (int z = 0; z < RENDER_DEPTH; ++z) {
-    perspective_divisions[z] = FLOAT_TO_FIXED_8(projection / z);
+    perspective_divisions[z] = FLOAT_TO_FX_12(projection / z);
   }
 }
 
 static float Lerp(float a, float b, float t) { return a + t * (b - a); }
 
-// TODO: Different for loops per mipmap
+#define INNER_LOOP()                                                                          \
+  u += du;                                                                                    \
+  v -= dv;                                                                                    \
+  int iu = FX_12_TO_INT(u) & (active_mip_width_mask);                                         \
+  int iv = FX_12_TO_INT(v) & (active_mip_height_mask);                                        \
+                                                                                              \
+  unsigned int texel = active_mip[iu + iv * active_mip_width];                                \
+  int terrain_height = INT_TO_FX_12(texel >> 8);                                              \
+                                                                                              \
+  int height_delta = camera_y - terrain_height;                                               \
+  int yp = FX_12_TO_INT(screen_center_y - FX_12_MUL(height_delta, perspective_divisions[z])); \
+                                                                                              \
+  if (yp >= 0 && yp < h && yp > highest_drawn_col) {                                          \
+    unsigned int palette_index = texel & 0xFF;                                                \
+                                                                                              \
+    for (int line_y = highest_drawn_col + 1; line_y <= yp; line_y++) {                        \
+      *(row++) = palette_index;                                                               \
+    }                                                                                         \
+                                                                                              \
+    highest_drawn_col = yp;                                                                   \
+  }
+
+#define NEXT_MIPMAP()                             \
+  active_mip = mip_maps[++mip_level];             \
+  u *= 0.5f;                                      \
+  v *= 0.5f;                                      \
+  active_mip_width >>= 1;                         \
+  active_mip_height >>= 1;                        \
+  active_mip_width_mask  = active_mip_width - 1;  \
+  active_mip_height_mask = active_mip_height - 1; \
+  du                     = FX_12_DIV2(du);        \
+  dv                     = FX_12_DIV2(dv);
 
 int VoxelTerrain(unsigned char* buffer, int w, int h, int stride) {
   // Screen center
-  int screen_center_y = INT_TO_FIXED_8(h >> 1);
-  int loops           = 0;
+  int screen_center_y = INT_TO_FX_12(h >> 1);
 
   // Metaphor: Throw rays from the camera (eye) towards the screen.
   // The direcion of the rays change (du and dv) depending on the screen X.
@@ -214,62 +244,39 @@ int VoxelTerrain(unsigned char* buffer, int w, int h, int stride) {
     int v = camera_z;
 
     // Assumes FOV of 90 degrees
-    int du = FLOAT_TO_FIXED_8(Lerp(-1, 1, (float)xp / (float)w));
-    int dv = INT_TO_FIXED_8(1);
+    int du = FLOAT_TO_FX_12(Lerp(-1, 1, (float)xp / (float)w));
+    int dv = INT_TO_FX_12(1);
 
     // 0 Up - h Down
-    int mip_level                       = 0;
-    uint16_t* active_mip                = mip_maps[mip_level];
-    int active_mip_width                = base_map_width;
-    int active_mip_height               = base_map_height;
-    int highest_drawn_col               = 0;
-    int step_z                          = 1;
-    int mip_level_switch_distance       = 512;
-    unsigned char mip_level_debug_color = 0;
+    int mip_level              = 0;
+    uint16_t* active_mip       = mip_maps[mip_level];
+    int active_mip_width       = base_map_width;
+    int active_mip_height      = base_map_height;
+    int active_mip_width_mask  = active_mip_width - 1;
+    int active_mip_height_mask = active_mip_height - 1;
+    int highest_drawn_col      = 0;
 
     unsigned char* row = &buffer[xp * stride];
 
     // Throw a ray towards the screen and move RENDER_DEPTH steps
-    for (int z = 1; z < RENDER_DEPTH; z += step_z) {
-      loops++;
-      u += du;
-      v -= dv;
-      int iu = FIXED_8_TO_INT(u) & (active_mip_width - 1);
-      int iv = FIXED_8_TO_INT(v) & (active_mip_height - 1);
+    for (int z = 1; z < 1500; z++) {
+      INNER_LOOP();
+    }
 
-      unsigned int texel = active_mip[iu + iv * active_mip_width];
-      int terrain_height = INT_TO_FIXED_8(texel >> 8);
+    NEXT_MIPMAP();
 
-      int height_delta = camera_y - terrain_height;
-      int yp =
-          FIXED_8_TO_INT(screen_center_y - FIXED_8_MUL(height_delta, perspective_divisions[z]));
+    for (int z = 1500; z < 3000; z++) {
+      INNER_LOOP();
+    }
 
-      if (yp >= 0 && yp < h && yp > highest_drawn_col) {
-        unsigned int palette_index = texel & 0xFF;
+    NEXT_MIPMAP();
 
-        // Draw into the transposed color buffer
-        for (int line_y = highest_drawn_col + 1; line_y <= yp; line_y++) {
-          *(row++) = palette_index;
-          // *(row++) = mip_level_debug_color;
-        }
-
-        highest_drawn_col = yp;
-      }
-
-      if ((z & (mip_level_switch_distance - 1)) == 0 && mip_level < MIP_MAP_LEVELS - 1) {
-        // mip_level_debug_color++;
-        active_mip = mip_maps[++mip_level];
-        mip_level_switch_distance <<= 2;
-        u *= 0.5f;
-        v *= 0.5f;
-        active_mip_width >>= 1;
-        active_mip_height >>= 1;
-        step_z *= 2;
-      }
+    for (int z = 3000; z < 4096; z++) {
+      INNER_LOOP();
     }
   }
 
-  return loops;
+  return w * 4095;
 }
 
 static int tile_size = 128;
@@ -413,12 +420,12 @@ int main(int argc, char** argv) {
       switch (event.type) {
         case SDL_MOUSEBUTTONDOWN:
           if (SDL_BUTTON_WHEELDOWN == event.button.button) {
-            camera_speed -= INT_TO_FIXED_8(1);
+            camera_speed -= FLOAT_TO_FX_12(0.2f);
           } else if (SDL_BUTTON_WHEELUP == event.button.button) {
-            camera_speed += INT_TO_FIXED_8(1);
+            camera_speed += FLOAT_TO_FX_12(0.2f);
           }
           if (camera_speed < 0.0f) camera_speed = 0;
-          if (camera_speed > INT_TO_FIXED_8(MAX_CAMERA_SPEED)) camera_speed = MAX_CAMERA_SPEED;
+          if (camera_speed > INT_TO_FX_12(MAX_CAMERA_SPEED)) camera_speed = MAX_CAMERA_SPEED;
           break;
         case SDL_QUIT:
           quit = 1;
