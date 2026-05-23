@@ -38,6 +38,7 @@ static void ChronoShow(char* name, int computations) {
 
 // Limit framerate and return any remaining time to the OS
 
+#if 0
 static void FramerateLimit(int max_fps) {
   static unsigned int frame_time = 0;
 
@@ -48,7 +49,7 @@ static void FramerateLimit(int max_fps) {
   if (elapsed < limit) usleep((limit - elapsed) * 1000);  // arg in microseconds
   frame_time = GetMsTime();
 }
-
+#endif
 // ---------------------------------------------------------------------------
 
 static void LoadPalettedBMP(const char* file_path, unsigned char** indices, unsigned int** palette,
@@ -110,6 +111,7 @@ static uint16_t* PackTexture(unsigned char* color_indices, unsigned char* height
   return packed_map;
 }
 
+#if 0
 static void PrintBits(size_t const size, void const* const ptr) {
   unsigned char* b = (unsigned char*)ptr;
   unsigned char byte;
@@ -122,6 +124,7 @@ static void PrintBits(size_t const size, void const* const ptr) {
     }
   }
 }
+#endif
 
 static uint16_t* LoadBMPMipmapLevel(int level, const char* color_path, const char* height_path,
                                     unsigned int** palette, int* width, int* height) {
@@ -183,15 +186,16 @@ static void InitializeEffect(int screen_w, int screen_h, float projection) {
 
   mip_maps[0] = LoadBMPMipmapLevel(0, "../maps/C1W", "../maps/D1", &palette, &base_map_width,
                                    &base_map_height);
-  mip_maps[1] = LoadBMPMipmapLevel(1, "../maps/C1W", "../maps/D1", &palette, &w, &h);
+  assert(base_map_width > 4 && base_map_height > 4);
+  mip_maps[1] = LoadBMPMipmapLevel(1, "../maps/C1W", "../maps/D1", NULL, &w, &h);
   assert(base_map_width >> 1 == w && base_map_height >> 1 == h);
-  mip_maps[2] = LoadBMPMipmapLevel(2, "../maps/C1W", "../maps/D1", &palette, &w, &h);
+  mip_maps[2] = LoadBMPMipmapLevel(2, "../maps/C1W", "../maps/D1", NULL, &w, &h);
   assert(base_map_width >> 2 == w && base_map_height >> 2 == h);
 
   screen_color_indices = (unsigned char*)malloc(screen_w * screen_h);
   assert(screen_color_indices);
 
-  for (int z = 0; z < RENDER_DEPTH; ++z) {
+  for (int z = 1; z < RENDER_DEPTH; ++z) {
     perspective_divisions[z] = FLOAT_TO_FX_12(projection / z);
   }
 }
@@ -231,7 +235,11 @@ static float Lerp(float a, float b, float t) { return a + t * (b - a); }
   du                     = FX_12_DIV2(du);        \
   dv                     = FX_12_DIV2(dv);
 
-int VoxelTerrain(unsigned char* buffer, int w, int h, int stride) {
+int VoxelTerrain(unsigned char* buffer, int w, int h) {
+  assert(buffer);
+  assert(w > 0);
+  assert(h > 0);
+
   // Screen center
   int screen_center_y = INT_TO_FX_12(h >> 1);
 
@@ -248,35 +256,38 @@ int VoxelTerrain(unsigned char* buffer, int w, int h, int stride) {
     int dv = INT_TO_FX_12(1);
 
     // 0 Up - h Down
+    uint16_t* active_mip       = mip_maps[0];
     int mip_level              = 0;
-    uint16_t* active_mip       = mip_maps[mip_level];
     int active_mip_width       = base_map_width;
     int active_mip_height      = base_map_height;
     int active_mip_width_mask  = active_mip_width - 1;
     int active_mip_height_mask = active_mip_height - 1;
     int highest_drawn_col      = 0;
 
-    unsigned char* row = &buffer[xp * stride];
+    unsigned char* row = &buffer[xp * h];
+
+    // Looks good with 1500, 3000 and 4096
+    // Reduce it to be similar to video
 
     // Throw a ray towards the screen and move RENDER_DEPTH steps
-    for (int z = 1; z < 1500; z++) {
+    for (int z = 1; z < 256; z++) {
       INNER_LOOP();
     }
 
     NEXT_MIPMAP();
 
-    for (int z = 1500; z < 3000; z++) {
+    for (int z = 256; z < 512; z++) {
       INNER_LOOP();
     }
 
     NEXT_MIPMAP();
 
-    for (int z = 3000; z < 4096; z++) {
+    for (int z = 512; z < 1024; z++) {
       INNER_LOOP();
     }
   }
 
-  return w * 4095;
+  return w * 1023;
 }
 
 static int tile_size = 128;
@@ -398,7 +409,7 @@ int main(int argc, char** argv) {
     memset(screen_color_indices, 1, g_SDLSrf->w * g_SDLSrf->h);
 
     ChronoWatchReset();
-    int loops = VoxelTerrain(screen_color_indices, g_SDLSrf->w, g_SDLSrf->h, g_SDLSrf->h);
+    int loops = VoxelTerrain(screen_color_indices, g_SDLSrf->w, g_SDLSrf->h);
     ChronoShow("Voxel Terrain", loops);
     DrawToScreen(g_SDLSrf->pixels, g_SDLSrf->w, g_SDLSrf->h, screen_color_indices);
     ChronoShow("Draw To Screen", g_SDLSrf->w * g_SDLSrf->h);
@@ -434,5 +445,9 @@ int main(int argc, char** argv) {
     }
   }
 
-  return 1;
+  free(palette);
+  free(screen_color_indices);
+  for (int i = 0; i < MIP_MAP_LEVELS; i++) {
+    free(mip_maps[i]);
+  }
 }
